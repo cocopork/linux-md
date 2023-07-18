@@ -564,7 +564,7 @@ static void stats_miss(struct stats *s)
  * out across the levels, or if an io load changes.  We detect this by
  * seeing how often a lookup is in the top levels of the hotspot queue.
  */
-// czs：根据命中率评估缓存状态
+// czs：根据命中率评估缓存状态（性能）
 static enum performance stats_assess(struct stats *s)
 {
 	unsigned confidence = safe_div(s->hits << FP_SHIFT, s->hits + s->misses);
@@ -860,7 +860,7 @@ struct smq_policy {
 	bool current_demote_sentinels;
 	unsigned long next_demote_period;
 
-	// czs：缓存块提升级别和降级级别阈值
+	// czs：缓存块读写提升层级阈值
 	unsigned write_promote_level;
 	unsigned read_promote_level;
 
@@ -1753,7 +1753,7 @@ static bool too_many_hotspot_blocks(sector_t origin_size,
 	return (hotspot_block_size * nr_hotspot_blocks) > origin_size;
 }
 
-// czs：计算热点块的块大小和块数量，热点块的块大小为缓存块大小的 16 倍，热点块数量为缓存块数量的 1/4 或 1024，取较小值
+// czs：计算热点块的块大小和块数量，热点块的块大小为缓存块大小的 16 倍，热点块数量为缓存块数量的 1/4 或 1024，取较大值
 static void calc_hotspot_params(sector_t origin_size,
 				sector_t cache_block_size,
 				unsigned nr_cache_blocks,
