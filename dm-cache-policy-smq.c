@@ -547,6 +547,7 @@ static void stats_reset(struct stats *s)
 // czs：更新缓存命中统计情况，当访问级别大于等于命中阈值时，命中次数加一，否则未命中次数加一
 static void stats_level_accessed(struct stats *s, unsigned level)
 {
+	// ggboy:相当于只记录最高16级，也就是49~64级的缓存命中
 	if (level >= s->hit_threshold)
 		s->hits++;
 	else
@@ -592,6 +593,12 @@ struct smq_hash_table {
  * use indexing again, and only store indexes to the next entry.
  */
 // czs：初始化哈希表，使用链式哈希，只存储索引（块号）
+/* 
+ * ggboy:
+ * 这个哈希表的表项就是entry space中 cache_alloc 管理区域内的一个entry
+ * entry space中的表项是通用表项，既可以作为分配器的free链表表项，也可以成为哈希链表表项
+ * 还可以作为哨兵链表的表项
+ */
 static int h_init(struct smq_hash_table *ht, struct entry_space *es, unsigned nr_entries)
 {
 	unsigned i, nr_buckets;
