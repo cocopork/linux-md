@@ -773,6 +773,11 @@ static void remap_to_cache_dirty(struct cache *cache, struct bio *bio,
 	}
 }
 
+/* 
+ * ggboy:
+ * 从bio中获得当前bio请求数据起始地址，
+ * 并将长度从sector单位转换为cache block单位。
+ */
 static dm_oblock_t get_bio_block(struct cache *cache, struct bio *bio)
 {
 	sector_t block_nr = bio->bi_iter.bi_sector;
@@ -1055,10 +1060,12 @@ static void background_work_end(struct cache *cache)
 
 static bool bio_writes_complete_block(struct cache *cache, struct bio *bio)
 {
+	// ggboy:bio剩余数量等于单个缓存块大小，即写到了最后一个块的数据
 	return (bio_data_dir(bio) == WRITE) &&
 		(bio->bi_iter.bi_size == (cache->sectors_per_block << SECTOR_SHIFT));
 }
 
+// ggboy:被discarded的块和bio大小刚好等于缓存块大小（32KB）时可以被优化
 static bool optimisable_bio(struct cache *cache, struct bio *bio, dm_oblock_t block)
 {
 	return writeback_mode(cache) &&
@@ -1641,10 +1648,13 @@ static int map_bio(struct cache *cache, struct bio *bio, dm_oblock_t block,
 		if (r == -ENOENT && op) {
 			bio_drop_shared_lock(cache, bio);
 			BUG_ON(op->op != POLICY_PROMOTE);
+			// ggboy:前台迁移？
 			mg_start(cache, op, bio);
 			return DM_MAPIO_SUBMITTED;
 		}
 	} else {
+		// ggboy:一般情况下的bio
+		// ggboy:不能被优化的bio，不可进行fast_copy。
 		r = policy_lookup(cache->policy, block, &cblock, data_dir, false, &background_queued);
 		if (unlikely(r && r != -ENOENT)) {
 			DMERR_LIMIT("%s: policy_lookup() failed with r = %d",
@@ -1653,6 +1663,7 @@ static int map_bio(struct cache *cache, struct bio *bio, dm_oblock_t block,
 			return DM_MAPIO_SUBMITTED;
 		}
 
+		// ggboy:如果此次查询需要迁移块，则唤醒迁移线程
 		if (background_queued)
 			wake_migration_worker(cache);
 	}
@@ -1663,6 +1674,7 @@ static int map_bio(struct cache *cache, struct bio *bio, dm_oblock_t block,
 		/*
 		 * Miss.
 		 */
+		// ggboy:这里才是dmsetup status显示的读写命中次数和未命中次数
 		inc_miss_counter(cache, bio);
 		if (pb->req_nr == 0) {
 			accounted_begin(cache, bio);
@@ -1807,6 +1819,7 @@ static void process_deferred_bios(struct work_struct *ws)
 
 	bio_list_init(&bios);
 
+	// ggboy:创建新的bios链，将cache->deferred_bios中的所有bio迁移到新bio链中。
 	spin_lock_irq(&cache->lock);
 	bio_list_merge(&bios, &cache->deferred_bios);
 	bio_list_init(&cache->deferred_bios);
@@ -1994,6 +2007,7 @@ struct cache_args {
 	struct dm_dev *origin_dev;
 	sector_t origin_sectors;
 
+	// ggboy:cache block size，最小可被设为32KB
 	uint32_t block_size;
 
 	const char *policy_name;
@@ -2398,6 +2412,7 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	ca->metadata_dev = ca->origin_dev = ca->cache_dev = NULL;
 
 	origin_blocks = cache->origin_sectors = ca->origin_sectors;
+	// ggboy:origin blocks大小已经在创建时被设置成与cache block size 一致。
 	origin_blocks = block_div(origin_blocks, ca->block_size);
 	cache->origin_blocks = to_oblock(origin_blocks);
 

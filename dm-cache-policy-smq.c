@@ -473,6 +473,11 @@ static void q_redistribute(struct queue *q)
 	}
 }
 
+/* 
+ * ggboy:
+ * 重新排列队列，将entry *e升级并使其与新一级中的一个entry交换位置
+ * s1为非当前哨兵，s2为当前哨兵
+ */
 static void q_requeue(struct queue *q, struct entry *e, unsigned extra_levels,
 		      struct entry *s1, struct entry *s2)
 {
@@ -491,6 +496,12 @@ static void q_requeue(struct queue *q, struct entry *e, unsigned extra_levels,
 			q_del(q, de);
 			de->level = e->level;
 			// czs：根据哨兵条目确定插入位置
+			/* 
+			 * ggboy:
+			 * de 的位置由两个哨兵决定，一共有三个位置，如下所示
+			 * head --- 1 ---| 非当前哨兵 | --- 2 --- | 当前哨兵 | --- 3 --- tail
+			 * de原本在那个位置，交换等级后继续在该位置。
+			 */
 			if (s1) {
 				switch (sentinels_passed) {
 				case 0:
@@ -547,7 +558,7 @@ static void stats_reset(struct stats *s)
 // czs：更新缓存命中统计情况，当访问级别大于等于命中阈值时，命中次数加一，否则未命中次数加一
 static void stats_level_accessed(struct stats *s, unsigned level)
 {
-	// ggboy:相当于只记录最高16级，也就是49~64级的缓存命中
+	// ggboy:相当于只记录最高16级，也就是48~63级的缓存命中
 	if (level >= s->hit_threshold)
 		s->hits++;
 	else
@@ -1337,7 +1348,7 @@ static dm_oblock_t to_hblock(struct smq_policy *mq, dm_oblock_t b)
 {
 	sector_t r = from_oblock(b);
 	(void) sector_div(r, mq->cache_blocks_per_hotspot_block);
-	return to_oblock(r);=
+	return to_oblock(r);
 }
 
 // czs: 更新热点队列中的条目。如果逻辑块号在热点队列中已经存在，则将其重新插入队列的前端，并根据命中情况增加额外级别。如果逻辑块号在热点队列中不存在，则分配一个新的条目并将其插入队列中
@@ -1345,6 +1356,7 @@ static struct entry *update_hotspot_queue(struct smq_policy *mq, dm_oblock_t b)
 {
 	unsigned hi;
 	// czs: 在热点队列中查找 oblock 对应的 entry
+	//? ggboy:逻辑块号转热点块号，直接除了cache_blocks_per_hotspot_block，oblock已经由4KB转为cache block大小了吗？
 	dm_oblock_t hb = to_hblock(mq, b);
 	struct entry *e = h_lookup(&mq->hotspot_table, hb);
 
@@ -1428,6 +1440,7 @@ static int __lookup(struct smq_policy *mq, dm_oblock_t oblock, dm_cblock_t *cblo
 		requeue(mq, e);
 		// czs：根据条目 e 推测出缓存块号
 		*cblock = infer_cblock(mq, e);
+		// ggboy:如果缓存命中，则返回 DM_MAPIO_SUBMITTED 标记告知上层map_bio()，告知上层具体的cblock
 		return 0;
 
 	} else {
@@ -1446,6 +1459,7 @@ static int __lookup(struct smq_policy *mq, dm_oblock_t oblock, dm_cblock_t *cblo
 			*background_work = true;
 		}
 
+		// ggboy:如果缓存未命中，则返回-ENOENT告知缓存未命中
 		return -ENOENT;
 	}
 }
