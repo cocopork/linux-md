@@ -947,6 +947,7 @@ static inline sector_t max_io_len_target_boundary(struct dm_target *ti,
 static sector_t max_io_len(struct dm_target *ti, sector_t sector)
 {
 	sector_t target_offset = dm_target_offset(ti, sector);
+	// ggboy:请求大小不能超过目标设备的容量！
 	sector_t len = max_io_len_target_boundary(ti, target_offset);
 	sector_t max_len;
 
@@ -958,6 +959,13 @@ static sector_t max_io_len(struct dm_target *ti, sector_t sector)
 	 *   ti->max_io_len to override stacked chunk_sectors.
 	 */
 	if (ti->max_io_len) {
+		/* 
+		* ggboy:
+		* bio最大请求量要么由目标设备的 请求队列获得，要么由目标设备当前io的特殊限制获得
+		* q->limits.chunk_sectors
+		* q->limits.max_sectors;
+		* q->limits.max_sectors;
+		*/
 		max_len = blk_max_size_offset(ti->table->md->queue,
 					      target_offset, ti->max_io_len);
 		if (len > max_len)
@@ -1218,6 +1226,7 @@ static blk_qc_t __map_bio(struct dm_target_io *tio)
 	if (dm_emulate_zone_append(io->md))
 		r = dm_zone_map_bio(tio);
 	else
+		// ggboy:上层使用bio的位置
 		r = ti->type->map(ti, clone);
 
 	switch (r) {
@@ -1267,6 +1276,7 @@ static int clone_bio(struct dm_target_io *tio, struct bio *bio,
 	struct bio *clone = &tio->clone;
 	int r;
 
+	// ggboy:克隆bio只有元数据，没有请求数据
 	__bio_clone_fast(clone, bio);
 
 	r = bio_crypt_clone(clone, bio, GFP_NOIO);
@@ -1398,6 +1408,7 @@ static int __clone_and_map_data_bio(struct clone_info *ci, struct dm_target *ti,
 	struct dm_target_io *tio;
 	int r;
 
+	// ggboy:分配一个tio和新的bio
 	tio = alloc_tio(ci, ti, 0, GFP_NOIO);
 	tio->len_ptr = len;
 	r = clone_bio(tio, bio, sector, *len);
@@ -1494,6 +1505,7 @@ static int __split_and_process_non_flush(struct clone_info *ci)
 	if (__process_abnormal_io(ci, ti, &r))
 		return r;
 
+	// ggboy:限定请求大小的地方
 	len = min_t(sector_t, max_io_len(ti, ci->sector), ci->sector_count);
 
 	r = __clone_and_map_data_bio(ci, ti, ci->sector, &len);
@@ -1606,6 +1618,7 @@ static blk_qc_t dm_submit_bio(struct bio *bio)
 	 * Use blk_queue_split() for abnormal IO (e.g. discard, writesame, etc)
 	 * otherwise associated queue_limits won't be imposed.
 	 */
+	// ggboy:异常bio包括discard操作，安全擦除扇区，写同一位置，零填充操作四种
 	if (is_abnormal_io(bio))
 		blk_queue_split(&bio);
 

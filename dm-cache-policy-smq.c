@@ -1272,6 +1272,10 @@ static void queue_demotion(struct smq_policy *mq)
 	}
 }
 
+/* 
+ * ggboy:
+ *	进行迁移时，先分配entry，在设置迁移任务信息workp，最后更新跟踪器
+ */
 static void queue_promotion(struct smq_policy *mq, dm_oblock_t oblock,
 			    struct policy_work **workp)
 {
@@ -1283,6 +1287,7 @@ static void queue_promotion(struct smq_policy *mq, dm_oblock_t oblock,
 		return;
 
 	// czs：如果缓存队列中没有空闲条目，则调用 queue_demotion 函数，将干净块队列中的条目降级
+	// ggboy:没有空闲条目直接返回！
 	if (allocator_empty(&mq->cache_alloc)) {
 		/*
 		 * We always claim to be 'idle' to ensure some demotions happen
@@ -1293,6 +1298,7 @@ static void queue_promotion(struct smq_policy *mq, dm_oblock_t oblock,
 		return;
 	}
 
+	// ggboy:已在迁移队列中
 	if (btracker_promotion_already_present(mq->bg_work, oblock))
 		return;
 

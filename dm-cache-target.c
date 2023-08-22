@@ -549,7 +549,7 @@ static struct per_bio_data *init_per_bio_data(struct bio *bio)
 }
 
 /*----------------------------------------------------------------*/
-
+// ggboy:将单个bio加入延迟bio队列，并唤醒延迟bio处理线程
 static void defer_bio(struct cache *cache, struct bio *bio)
 {
 	spin_lock_irq(&cache->lock);
@@ -559,6 +559,7 @@ static void defer_bio(struct cache *cache, struct bio *bio)
 	wake_deferred_bio_worker(cache);
 }
 
+// ggboy:将一串bio链表加入延迟bio队列，并唤醒延迟bio处理线程
 static void defer_bios(struct cache *cache, struct bio_list *bios)
 {
 	spin_lock_irq(&cache->lock);
@@ -1819,7 +1820,13 @@ static void process_deferred_bios(struct work_struct *ws)
 
 	bio_list_init(&bios);
 
-	// ggboy:创建新的bios链，将cache->deferred_bios中的所有bio迁移到新bio链中。
+	// ggboy:
+	/* 
+	 * ggboy:
+	 * 创建新的bios链，将cache->deferred_bios中的所有bio迁移到新bio链中。
+	 * 并且在迁移完之后，cache将释放deferred_bios，在处理本次延迟bios时
+	 * 不影响后续延迟bio的继续加入
+	 */
 	spin_lock_irq(&cache->lock);
 	bio_list_merge(&bios, &cache->deferred_bios);
 	bio_list_init(&cache->deferred_bios);
@@ -1844,6 +1851,7 @@ static void process_deferred_bios(struct work_struct *ws)
  * Main worker loop
  *--------------------------------------------------------------*/
 
+// ggboy:似乎是清楚当前的延迟bio队列
 static void requeue_deferred_bios(struct cache *cache)
 {
 	struct bio *bio;
