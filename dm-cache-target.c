@@ -845,6 +845,7 @@ static void remap_to_origin_and_cache(struct cache *cache, struct bio *bio,
 	__remap_to_origin_clear_discard(cache, origin_bio, oblock, false);
 	submit_bio(origin_bio);
 
+	// ggboy:修改bio到cache设备，并将写入量改回字节单位
 	remap_to_cache(cache, bio, cblock);
 }
 
@@ -970,6 +971,7 @@ static void save_stats(struct cache *cache)
 	dm_cache_metadata_set_stats(cache->cmd, &stats);
 }
 
+// ggboy:迁移任务完成一次，对应计数器就会加1
 static void update_stats(struct cache_stats *stats, enum policy_operation op)
 {
 	switch (op) {
@@ -1436,6 +1438,7 @@ static int mg_start(struct cache *cache, struct policy_work *op, struct bio *bio
 {
 	struct dm_cache_migration *mg;
 
+	// ggboy:如果有后台任务没有完成，直接结束该任务并标记为失败
 	if (!background_work_begin(cache)) {
 		policy_complete_background_work(cache->policy, op, false);
 		return -EPERM;
@@ -1444,6 +1447,7 @@ static int mg_start(struct cache *cache, struct policy_work *op, struct bio *bio
 	mg = alloc_migration(cache);
 
 	mg->op = op;
+	// ggboy:添加本次执行的bio，在迁移完成之后，还需要将本次bio的写入数据进行覆盖
 	mg->overwrite_bio = bio;
 
 	// ggboy:如果没给bio，表示此次为后台迁移
@@ -1679,6 +1683,7 @@ static int map_bio(struct cache *cache, struct bio *bio, dm_oblock_t block,
 		inc_miss_counter(cache, bio);
 		if (pb->req_nr == 0) {
 			accounted_begin(cache, bio);
+			// ggboy:重映射到慢设备，并消除discard标志
 			remap_to_origin_clear_discard(cache, bio, block);
 		} else {
 			/*
@@ -1708,9 +1713,11 @@ static int map_bio(struct cache *cache, struct bio *bio, dm_oblock_t block,
 		} else {
 			if (bio_data_dir(bio) == WRITE && writethrough_mode(cache) &&
 			    !is_dirty(cache, cblock)) {
+				// ggboy:同时写入缓存和慢设备，这里只完成了写入慢设备的操作
 				remap_to_origin_and_cache(cache, bio, block, cblock);
 				accounted_begin(cache, bio);
 			} else
+				// ggboy:只写入慢设备
 				remap_to_cache_dirty(cache, bio, block, cblock);
 		}
 	}
@@ -1724,6 +1731,7 @@ static int map_bio(struct cache *cache, struct bio *bio, dm_oblock_t block,
 		 * we call accounted_complete() to avoid double accounting.
 		 */
 		accounted_complete(cache, bio);
+		// ggboy:如果需要强制同步，则等到提交之后再发射本bio
 		issue_after_commit(&cache->committer, bio);
 		*commit_needed = true;
 		return DM_MAPIO_SUBMITTED;
@@ -2649,14 +2657,18 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 	bool commit_needed;
 	dm_oblock_t block = get_bio_block(cache, bio);
 
+	// ggboy:per_bio_data似乎是在dm_io或tio外边套了层皮？
 	init_per_bio_data(bio);
+	// ggboy:如果bio(clone)中的数据量大于单个缓存块大小，重映射回原始设备？？
 	if (unlikely(from_oblock(block) >= from_oblock(cache->origin_blocks))) {
 		/*
 		 * This can only occur if the io goes to a partial block at
 		 * the end of the origin device.  We don't cache these.
 		 * Just remap to the origin and carry on.
 		 */
+		// ggboy:重映射回慢设备
 		remap_to_origin(cache, bio);
+		// ggboy:修改io tracker，增长in_flight 数据
 		accounted_begin(cache, bio);
 		return DM_MAPIO_REMAPPED;
 	}

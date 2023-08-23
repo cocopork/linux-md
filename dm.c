@@ -71,7 +71,9 @@ struct clone_info {
 	struct dm_table *map;
 	struct bio *bio;
 	struct dm_io *io;
+	// ggboy:bio请求起始扇区地址
 	sector_t sector;
+	// ggboy:bio请求得带完成的IO扇区数量
 	unsigned sector_count;
 };
 
@@ -519,6 +521,11 @@ static struct dm_io *alloc_io(struct mapped_device *md, struct bio *bio)
 	struct dm_target_io *tio;
 	struct bio *clone;
 
+	/* 
+	 * ggboy:
+	 * 管理bio对象分配的地方在md->io_bs，但md->io_bs管理的是整个dm_io对象
+	 * 返回的指针只是指向对象中的bio区域。
+	 */
 	clone = bio_alloc_bioset(GFP_NOIO, 0, &md->io_bs);
 	if (!clone)
 		return NULL;
@@ -1226,7 +1233,7 @@ static blk_qc_t __map_bio(struct dm_target_io *tio)
 	if (dm_emulate_zone_append(io->md))
 		r = dm_zone_map_bio(tio);
 	else
-		// ggboy:上层使用bio的位置
+		// ggboy:上层使用map_io的位置
 		r = ti->type->map(ti, clone);
 
 	switch (r) {
@@ -1234,7 +1241,9 @@ static blk_qc_t __map_bio(struct dm_target_io *tio)
 		break;
 	case DM_MAPIO_REMAPPED:
 		/* the bio has been remapped so dispatch it */
+		// ggboy:其中一种情况是bio大小大于缓存块的大小，此时需要重新定位到慢设备上
 		trace_block_bio_remap(clone, bio_dev(io->orig_bio), sector);
+		// ggboy:TODO，bio完成设备重新映射之后，开始执行提交
 		ret = submit_bio_noacct(clone);
 		break;
 	case DM_MAPIO_KILL:
@@ -1276,9 +1285,10 @@ static int clone_bio(struct dm_target_io *tio, struct bio *bio,
 	struct bio *clone = &tio->clone;
 	int r;
 
-	// ggboy:克隆bio只有元数据，没有请求数据
+	// ggboy:克隆bio只有元数据，没有请求数据，与原bio共享bvec
 	__bio_clone_fast(clone, bio);
 
+	// ggboy:如果有加密上下文，还要执行加密操作
 	r = bio_crypt_clone(clone, bio, GFP_NOIO);
 	if (r < 0)
 		return r;
@@ -1297,6 +1307,8 @@ static int clone_bio(struct dm_target_io *tio, struct bio *bio,
 			return r;
 	}
 
+	// ggboy:推进克隆的bio到当前请求的位置
+	// ggboy:sector应该等于bio->bi_iter.bi_sector才是
 	bio_advance(clone, to_bytes(sector - clone->bi_iter.bi_sector));
 	clone->bi_iter.bi_size = to_bytes(len);
 
@@ -1401,6 +1413,12 @@ static int __send_empty_flush(struct clone_info *ci)
 	return 0;
 }
 
+/* 
+ * ggboy:
+ * @len = min_t(sector_t, max_io_len(ti, ci->sector), ci->sector_count)
+ * @sector = ci->sector = 原始bio->bi_iter.bi_sector
+ * 其中ci.sector_count = bio_sectors(bio)
+ */
 static int __clone_and_map_data_bio(struct clone_info *ci, struct dm_target *ti,
 				    sector_t sector, unsigned *len)
 {
@@ -1411,6 +1429,7 @@ static int __clone_and_map_data_bio(struct clone_info *ci, struct dm_target *ti,
 	// ggboy:分配一个tio和新的bio
 	tio = alloc_tio(ci, ti, 0, GFP_NOIO);
 	tio->len_ptr = len;
+	//? ggboy:dm-clone才需要做的事情？
 	r = clone_bio(tio, bio, sector, *len);
 	if (r < 0) {
 		free_tio(tio);
@@ -1505,7 +1524,7 @@ static int __split_and_process_non_flush(struct clone_info *ci)
 	if (__process_abnormal_io(ci, ti, &r))
 		return r;
 
-	// ggboy:限定请求大小的地方
+	// ggboy:限定请求大小，不能超过目标设备的容量
 	len = min_t(sector_t, max_io_len(ti, ci->sector), ci->sector_count);
 
 	r = __clone_and_map_data_bio(ci, ti, ci->sector, &len);
@@ -1532,6 +1551,7 @@ static void init_clone_info(struct clone_info *ci, struct mapped_device *md,
 /*
  * Entry point to split a bio into clones and submit them to the targets.
  */
+// ggboy:复制一份bio并将其穿给目标设备处理
 static blk_qc_t __split_and_process_bio(struct mapped_device *md,
 					struct dm_table *map, struct bio *bio)
 {
@@ -1550,6 +1570,7 @@ static blk_qc_t __split_and_process_bio(struct mapped_device *md,
 		error = __split_and_process_non_flush(&ci);
 	} else {
 		ci.bio = bio;
+		// ggboy:将剩余IO量从字节对齐为扇区数
 		ci.sector_count = bio_sectors(bio);
 		error = __split_and_process_non_flush(&ci);
 		if (ci.sector_count && !error) {
@@ -1604,6 +1625,7 @@ static blk_qc_t dm_submit_bio(struct bio *bio)
 	}
 
 	/* If suspended, queue this IO for later */
+	// ggboy:md被设置为推迟执行bio
 	if (unlikely(test_bit(DMF_BLOCK_IO_FOR_SUSPEND, &md->flags))) {
 		if (bio->bi_opf & REQ_NOWAIT)
 			bio_wouldblock_error(bio);
@@ -3046,7 +3068,7 @@ static const struct pr_ops dm_pr_ops = {
 	.pr_preempt	= dm_pr_preempt,
 	.pr_clear	= dm_pr_clear,
 };
-
+// ggboy:这部分修改了块设备提交bio的接口
 static const struct block_device_operations dm_blk_dops = {
 	.submit_bio = dm_submit_bio,
 	.open = dm_blk_open,
