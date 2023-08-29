@@ -253,6 +253,7 @@ static int __lock(struct dm_bio_prison_v2 *prison,
 	return 0;
 }
 
+// czs: 一个复杂的锁，锁定一个 cell，很耗时
 int dm_cell_lock_v2(struct dm_bio_prison_v2 *prison,
 		    struct dm_cell_key_v2 *key,
 		    unsigned lock_level,

@@ -542,6 +542,7 @@ static struct dm_io *alloc_io(struct mapped_device *md, struct bio *bio)
 	io->md = md;
 	spin_lock_init(&io->endio_lock);
 
+	// ggboy:记录启动时间
 	start_io_acct(io);
 
 	return io;
@@ -1308,7 +1309,7 @@ static int clone_bio(struct dm_target_io *tio, struct bio *bio,
 	}
 
 	// ggboy:推进克隆的bio到当前请求的位置
-	// ggboy:sector应该等于bio->bi_iter.bi_sector才是
+	// ggboy:sector应该等于bio->bi_iter.bi_sector才是，所以等于没推进
 	bio_advance(clone, to_bytes(sector - clone->bi_iter.bi_sector));
 	clone->bi_iter.bi_size = to_bytes(len);
 

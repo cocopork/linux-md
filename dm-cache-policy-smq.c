@@ -579,6 +579,7 @@ static void stats_miss(struct stats *s)
 // czs：根据命中率评估缓存状态（性能）
 static enum performance stats_assess(struct stats *s)
 {
+	// czs: 这里的 s->hits 并不是真正的命中次数，因为在 stats_level_accessed 中，只有访问级别大于等于命中阈值时，才会将 hits 加一
 	unsigned confidence = safe_div(s->hits << FP_SHIFT, s->hits + s->misses);
 
 	if (confidence < SIXTEENTH)
@@ -1234,6 +1235,7 @@ static void queue_writeback(struct smq_policy *mq, bool idle)
 		work.cblock = infer_cblock(mq, e);
 
 		r = btracker_queue(mq->bg_work, &work, NULL);
+		// ggboy:如果任务添加失败，则又将条目放回队列头目
 		if (r) {
 			clear_pending(mq, e);
 			q_push_front(&mq->dirty, e);
@@ -1515,6 +1517,8 @@ static int smq_get_background_work(struct dm_cache_policy *p, bool idle,
 	spin_lock_irqsave(&mq->lock, flags);
 	r = btracker_issue(mq->bg_work, result);
 	if (r == -ENODATA) {
+		// ggboy:如果没有等待的后台迁移任务，则查看现在是否空闲
+		// ggboy:如果空闲着，且有脏数据，则开始写回
 		if (!clean_target_met(mq, idle)) {
 			queue_writeback(mq, idle);
 			r = btracker_issue(mq->bg_work, result);
@@ -1755,7 +1759,7 @@ static void init_policy_functions(struct smq_policy *mq, bool mimic_mq)
 {
 	mq->policy.destroy = smq_destroy;
 	mq->policy.lookup = smq_lookup;
-	mq->policy.lookup_with_work = smq_lookup_with_work;hotspot_block_sizepro
+	mq->policy.lookup_with_work = smq_lookup_with_work;
 	mq->policy.get_background_work = smq_get_background_work;
 	mq->policy.complete_background_work = smq_complete_background_work;
 	mq->policy.set_dirty = smq_set_dirty;

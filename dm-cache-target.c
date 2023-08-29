@@ -732,6 +732,7 @@ static void remap_to_cache(struct cache *cache, struct bio *bio,
 			(bi_sector & (cache->sectors_per_block - 1));
 }
 
+// czs : 检查是否需要进行 tick bio， 需要获取 bio 锁
 static void check_if_tick_bio_needed(struct cache *cache, struct bio *bio)
 {
 	struct per_bio_data *pb;
@@ -766,6 +767,7 @@ static void remap_to_origin_clear_discard(struct cache *cache, struct bio *bio,
 static void remap_to_cache_dirty(struct cache *cache, struct bio *bio,
 				 dm_oblock_t oblock, dm_cblock_t cblock)
 {
+	// czs: 目前测试不需要 tick bio
 	check_if_tick_bio_needed(cache, bio);
 	remap_to_cache(cache, bio, cblock);
 	if (bio_data_dir(bio) == WRITE) {
@@ -1063,7 +1065,7 @@ static void background_work_end(struct cache *cache)
 
 static bool bio_writes_complete_block(struct cache *cache, struct bio *bio)
 {
-	// ggboy:bio剩余数量等于单个缓存块大小，即写到了最后一个块的数据
+	// ggboy:bio剩余数量等于单个缓存块大小，即对齐写
 	return (bio_data_dir(bio) == WRITE) &&
 		(bio->bi_iter.bi_size == (cache->sectors_per_block << SECTOR_SHIFT));
 }
@@ -1398,6 +1400,7 @@ static void mg_copy(struct work_struct *ws)
 		mg_full_copy(ws);
 }
 
+// czs: 迁移时写入速度慢很可能是这里的锁导致的
 static int mg_lock_writes(struct dm_cache_migration *mg)
 {
 	int r;
@@ -1717,7 +1720,7 @@ static int map_bio(struct cache *cache, struct bio *bio, dm_oblock_t block,
 				remap_to_origin_and_cache(cache, bio, block, cblock);
 				accounted_begin(cache, bio);
 			} else
-				// ggboy:只写入慢设备
+				// ggboy:重映射bio到快设备，只写入快设备
 				remap_to_cache_dirty(cache, bio, block, cblock);
 		}
 	}
@@ -2428,7 +2431,7 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	ca->metadata_dev = ca->origin_dev = ca->cache_dev = NULL;
 
 	origin_blocks = cache->origin_sectors = ca->origin_sectors;
-	// ggboy:origin blocks大小已经在创建时被设置成与cache block size 一致。
+	// ggboy:origin blocks大小已经在创建时被设置成与用户设置的cache block size 一致。
 	origin_blocks = block_div(origin_blocks, ca->block_size);
 	cache->origin_blocks = to_oblock(origin_blocks);
 
@@ -2659,7 +2662,7 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 
 	// ggboy:per_bio_data似乎是在dm_io或tio外边套了层皮？
 	init_per_bio_data(bio);
-	// ggboy:如果bio(clone)中的数据量大于单个缓存块大小，重映射回原始设备？？
+	// ggboy:如果bio(clone)中的起始块大于缓存大小，即超出容量，重映射回原始设备
 	if (unlikely(from_oblock(block) >= from_oblock(cache->origin_blocks))) {
 		/*
 		 * This can only occur if the io goes to a partial block at
