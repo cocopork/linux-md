@@ -1517,7 +1517,7 @@ static int smq_get_background_work(struct dm_cache_policy *p, bool idle,
 	spin_lock_irqsave(&mq->lock, flags);
 	r = btracker_issue(mq->bg_work, result);
 	if (r == -ENODATA) {
-		// ggboy:如果没有等待的后台迁移任务，则查看现在是否空闲
+		// ggboy:如果 b->queue 没有等待的后台迁移任务，则查看现在是否空闲
 		// ggboy:如果空闲着，且有脏数据，则开始写回
 		if (!clean_target_met(mq, idle)) {
 			queue_writeback(mq, idle);

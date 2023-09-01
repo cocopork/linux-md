@@ -44,6 +44,7 @@ DECLARE_DM_KCOPYD_THROTTLE_WITH_MODULE_PARM(cache_copy_throttle,
  * Represents a chunk of future work.  'input' allows continuations to pass
  * values between themselves, typically error values.
  */
+// ggboy:该结构体表示之后将要进行的任务，ws由链表连接
 struct continuation {
 	struct work_struct ws;
 	blk_status_t input;
@@ -440,6 +441,7 @@ static bool writeback_mode(struct cache *cache)
 	return cache->features.io_mode == CM_IO_WRITEBACK;
 }
 
+// czs: 判断是否为 passthrough 模式，即不使用缓存（dm-cache 自己的 passthrough 模式）
 static inline bool passthrough_mode(struct cache *cache)
 {
 	return unlikely(cache->features.io_mode == CM_IO_PASSTHROUGH);
@@ -453,7 +455,8 @@ static void wake_deferred_bio_worker(struct cache *cache)
 }
 
 static void wake_migration_worker(struct cache *cache)
-{
+{	
+	// czs: 如果是 passthrough 模式，不需要迁移数据到缓存中，不用唤醒后台迁移线程
 	if (passthrough_mode(cache))
 		return;
 
@@ -1077,6 +1080,7 @@ static bool optimisable_bio(struct cache *cache, struct bio *bio, dm_oblock_t bl
 		(is_discarded_oblock(cache, block) || bio_writes_complete_block(cache, bio));
 }
 
+// ggboy:延后一段时间在执行continuation函数
 static void quiesce(struct dm_cache_migration *mg,
 		    void (*continuation)(struct work_struct *))
 {
@@ -1369,6 +1373,7 @@ static void mg_copy(struct work_struct *ws)
 {
 	struct dm_cache_migration *mg = ws_to_mg(ws);
 
+	// ggboy:前台迁移，即当前bio需要先迁移数据完成，在写入本次请求数据
 	if (mg->overwrite_bio) {
 		/*
 		 * No exclusive lock was held when we last checked if the bio
@@ -1397,6 +1402,7 @@ static void mg_copy(struct work_struct *ws)
 		overwrite(mg, mg_update_metadata_after_copy);
 
 	} else
+		// ggboy:后台迁移
 		mg_full_copy(ws);
 }
 
@@ -1416,6 +1422,8 @@ static int mg_lock_writes(struct dm_cache_migration *mg)
 	 * everything.
 	 */
 	build_key(mg->op->oblock, oblock_succ(mg->op->oblock), &key);
+	// ggboy:如果是前台迁移，则有覆盖bio，需要同时阻止写和读，
+	// ggboy:如果是后台迁移，则没有覆盖bio，只需阻止其他写入即可
 	r = dm_cell_lock_v2(cache->prison, &key,
 			    mg->overwrite_bio ?  READ_WRITE_LOCK_LEVEL : WRITE_LOCK_LEVEL,
 			    prealloc, &mg->cell);
@@ -1441,7 +1449,7 @@ static int mg_start(struct cache *cache, struct policy_work *op, struct bio *bio
 {
 	struct dm_cache_migration *mg;
 
-	// ggboy:如果有后台任务没有完成，直接结束该任务并标记为失败
+	// ggboy:如果有后台任务没有完成，直接结束本次任务并标记为失败
 	if (!background_work_begin(cache)) {
 		policy_complete_background_work(cache->policy, op, false);
 		return -EPERM;
@@ -1488,10 +1496,12 @@ static void invalidate_completed(struct work_struct *ws)
 	invalidate_complete(mg, !mg->k.input);
 }
 
+// czs: 无效化一个缓存块
 static int invalidate_cblock(struct cache *cache, dm_cblock_t cblock)
 {
 	int r = policy_invalidate_mapping(cache->policy, cblock);
 	if (!r) {
+	
 		r = dm_cache_remove_mapping(cache->cmd, cblock);
 		if (r) {
 			DMERR_LIMIT("%s: invalidation failed; couldn't update on disk metadata",
@@ -1642,6 +1652,7 @@ static int map_bio(struct cache *cache, struct bio *bio, dm_oblock_t block,
 
 	data_dir = bio_data_dir(bio);
 
+	// czs: 优化 bio，直接写入缓存（必须与32KB对齐，且为 overwrite_bio）
 	if (optimisable_bio(cache, bio, block)) {
 		struct policy_work *op = NULL;
 
@@ -1654,6 +1665,7 @@ static int map_bio(struct cache *cache, struct bio *bio, dm_oblock_t block,
 		}
 
 		if (r == -ENOENT && op) {
+			// ggboy:释放共享锁？
 			bio_drop_shared_lock(cache, bio);
 			BUG_ON(op->op != POLICY_PROMOTE);
 			// ggboy:前台迁移？
@@ -1677,6 +1689,9 @@ static int map_bio(struct cache *cache, struct bio *bio, dm_oblock_t block,
 	}
 
 	if (r == -ENOENT) {
+		// czs: 在 passthrough 模式下，如果请求未命中缓存，应该直接将请求重映射到原始设备，并且不迁移数据（没有实现）
+
+		// czs：获取 bio 中存储的数据
 		struct per_bio_data *pb = get_per_bio_data(bio);
 
 		/*
@@ -1706,12 +1721,14 @@ static int map_bio(struct cache *cache, struct bio *bio, dm_oblock_t block,
 		 * Passthrough always maps to the origin, invalidating any
 		 * cache blocks that are written to.
 		 */
+		// czs: 在 passthrough 模式下，如果请求命中缓存，会将缓存块标记为脏，然后将缓存块写回原始设备
 		if (passthrough_mode(cache)) {
 			if (bio_data_dir(bio) == WRITE) {
 				bio_drop_shared_lock(cache, bio);
 				atomic_inc(&cache->stats.demotion);
 				invalidate_start(cache, cblock, block, bio);
 			} else
+				// czs: 对于读请求，直接重映射到原始设备
 				remap_to_origin_clear_discard(cache, bio, block);
 		} else {
 			if (bio_data_dir(bio) == WRITE && writethrough_mode(cache) &&
@@ -2026,7 +2043,7 @@ struct cache_args {
 	struct dm_dev *origin_dev;
 	sector_t origin_sectors;
 
-	// ggboy:cache block size，最小可被设为32KB
+	// ggboy:cache block size，单位：扇区，最小可被设为32KB
 	uint32_t block_size;
 
 	const char *policy_name;
@@ -2162,6 +2179,7 @@ static void init_features(struct cache_features *cf)
 	cf->discard_passdown = true;
 }
 
+// czs：解析 dmsetup 中的参数
 static int parse_features(struct cache_args *ca, struct dm_arg_set *as,
 			  char **error)
 {
@@ -2485,6 +2503,7 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	if (passthrough_mode(cache)) {
 		bool all_clean;
 
+		// czs: passthrough 模式下，所有的cache block都必须是clean的
 		r = dm_cache_metadata_all_clean(cache->cmd, &all_clean);
 		if (r) {
 			*error = "dm_cache_metadata_all_clean() failed";
@@ -3290,6 +3309,7 @@ static inline dm_cblock_t cblock_succ(dm_cblock_t b)
 	return to_cblock(from_cblock(b) + 1);
 }
 
+// czs: 使指定范围内的缓存块失效
 static int request_invalidation(struct cache *cache, struct cblock_range *range)
 {
 	int r = 0;
@@ -3300,6 +3320,7 @@ static int request_invalidation(struct cache *cache, struct cblock_range *range)
 	 * invalidation triggered by an io and an invalidation message.  This
 	 * is harmless, we must not worry if the policy call fails.
 	 */
+	// czs: 在范围内逐个失效缓存块
 	while (range->begin != range->end) {
 		r = invalidate_cblock(cache, range->begin);
 		if (r)

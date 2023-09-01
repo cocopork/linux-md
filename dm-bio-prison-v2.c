@@ -17,6 +17,13 @@
 
 #define MIN_CELLS 1024
 
+/* 
+ * ggboy:
+ * 一个使用红黑树管理每一个缓存块的二级锁
+ * 第一级是共享锁，优先级高。第二级是专用锁，优先级低。
+ * 猜测：多个读共享一个缓存块时，迁移或写入任务就需要将迁移任务放置到cell->quiesce_continuation中
+ * 每当一个读线程释放锁 __put() 时，都会检查当前cell是否有等待的任务，如果有，则将其迁移至监狱队列中
+ */
 struct dm_bio_prison_v2 {
 	struct workqueue_struct *wq;
 
@@ -186,6 +193,7 @@ bool dm_cell_get_v2(struct dm_bio_prison_v2 *prison,
 }
 EXPORT_SYMBOL_GPL(dm_cell_get_v2);
 
+// ggboy:释放二级锁，如果当前二级锁无读线程持有，
 static bool __put(struct dm_bio_prison_v2 *prison,
 		  struct dm_bio_prison_cell_v2 *cell)
 {
@@ -194,6 +202,8 @@ static bool __put(struct dm_bio_prison_v2 *prison,
 
 	// FIXME: shared locks granted above the lock level could starve this
 	if (!cell->shared_count) {
+		// ggboy:如果有线程持有着专用锁，说明其在等待共享锁释放
+		// ggboy:无读线程共享之后，将放在cell中的等待任务加入到监狱队列中。
 		if (cell->exclusive_lock){
 			if (cell->quiesce_continuation) {
 				queue_work(prison->wq, cell->quiesce_continuation);
@@ -254,6 +264,7 @@ static int __lock(struct dm_bio_prison_v2 *prison,
 }
 
 // czs: 一个复杂的锁，锁定一个 cell，很耗时
+// ggboy:返回0表示所成功，返回1表示还有其他进程正在使用该锁
 int dm_cell_lock_v2(struct dm_bio_prison_v2 *prison,
 		    struct dm_cell_key_v2 *key,
 		    unsigned lock_level,
@@ -274,9 +285,11 @@ static void __quiesce(struct dm_bio_prison_v2 *prison,
 		      struct dm_bio_prison_cell_v2 *cell,
 		      struct work_struct *continuation)
 {
+	// ggboy:共享锁空了，没有读线程在用，则将后续需要进行的工作加入到监狱队列中
 	if (!cell->shared_count)
 		queue_work(prison->wq, continuation);
 	else
+	// ggboy:如果没空闲，则将后续工作加入到cell中
 		cell->quiesce_continuation = continuation;
 }
 

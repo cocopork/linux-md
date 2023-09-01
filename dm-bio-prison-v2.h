@@ -45,6 +45,7 @@ struct dm_bio_prison_cell_v2 {
 	// FIXME: pack these
 	bool exclusive_lock;
 	unsigned exclusive_level;
+	// ggboy:似乎是共享锁，shared_count应该是指正在持有锁的读线程
 	unsigned shared_count;
 	struct work_struct *quiesce_continuation;
 

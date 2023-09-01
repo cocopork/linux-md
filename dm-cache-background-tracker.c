@@ -167,6 +167,7 @@ static bool max_work_reached(struct background_tracker *b)
 		atomic_read(&b->pending_demotes) >= b->max_work;
 }
 
+// ggboy:如果迁移任务到达最大数量，直接返回
 static struct bt_work *alloc_work(struct background_tracker *b)
 {
 	if (max_work_reached(b))
@@ -213,6 +214,7 @@ EXPORT_SYMBOL_GPL(btracker_queue);
 /*
  * Returns -ENODATA if there's no work.
  */
+// ggboy:从bg_tracker中提取后台等待的迁移任务，如果没有返回-ENODATA
 int btracker_issue(struct background_tracker *b, struct policy_work **work)
 {
 	struct bt_work *w;
