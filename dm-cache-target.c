@@ -1477,10 +1477,12 @@ static void invalidate_complete(struct dm_cache_migration *mg, bool success)
 	struct bio_list bios;
 	struct cache *cache = mg->cache;
 
+	// ggboy:无效化完成，释放并销毁相应的锁
 	bio_list_init(&bios);
 	if (dm_cell_unlock_v2(cache->prison, mg->cell, &bios))
 		free_prison_cell(cache, mg->cell);
 
+	// ggboy:覆盖写（一般为前台迁移）失败，打上失败标记
 	if (!success && mg->overwrite_bio)
 		bio_io_error(mg->overwrite_bio);
 
@@ -1501,7 +1503,6 @@ static int invalidate_cblock(struct cache *cache, dm_cblock_t cblock)
 {
 	int r = policy_invalidate_mapping(cache->policy, cblock);
 	if (!r) {
-	
 		r = dm_cache_remove_mapping(cache->cmd, cblock);
 		if (r) {
 			DMERR_LIMIT("%s: invalidation failed; couldn't update on disk metadata",
@@ -1570,6 +1571,7 @@ static int invalidate_lock(struct dm_cache_migration *mg)
 		 * might still be in request context.
 		 */
 		init_continuation(&mg->k, invalidate_remove);
+		// ggboy:将任务从cache工作队列迁移至某个CPU的工作队列
 		queue_work(cache->wq, &mg->k.ws);
 	}
 
@@ -3333,6 +3335,7 @@ static int request_invalidation(struct cache *cache, struct cblock_range *range)
 	return r;
 }
 
+// czs：处理失效缓存块消息，用户主动发起的失效缓存块命令
 static int process_invalidate_cblocks_message(struct cache *cache, unsigned count,
 					      const char **cblock_ranges)
 {
@@ -3340,6 +3343,7 @@ static int process_invalidate_cblocks_message(struct cache *cache, unsigned coun
 	unsigned i;
 	struct cblock_range range;
 
+	// czs：检查是否处于 passthrough 模式，只有在 passthrough 模式下才生效
 	if (!passthrough_mode(cache)) {
 		DMERR("%s: cache has to be in passthrough mode for invalidation",
 		      cache_device_name(cache));
@@ -3374,6 +3378,7 @@ static int process_invalidate_cblocks_message(struct cache *cache, unsigned coun
  *
  * The key migration_threshold is supported by the cache target core.
  */
+// czs: 缓存目标的消息处理函数，处理用户的命令
 static int cache_message(struct dm_target *ti, unsigned argc, char **argv,
 			 char *result, unsigned maxlen)
 {

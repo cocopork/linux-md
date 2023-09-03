@@ -1244,6 +1244,7 @@ static int __remove(struct dm_cache_metadata *cmd, dm_cblock_t cblock)
 	return 0;
 }
 
+// czs: 删除映射元数据
 int dm_cache_remove_mapping(struct dm_cache_metadata *cmd, dm_cblock_t cblock)
 {
 	int r;

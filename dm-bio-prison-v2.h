@@ -47,6 +47,7 @@ struct dm_bio_prison_cell_v2 {
 	unsigned exclusive_level;
 	// ggboy:似乎是共享锁，shared_count应该是指正在持有锁的读线程
 	unsigned shared_count;
+	// ggboy:每次__put锁的时候，检查该cell是否有等待的任务，如果有则将该任务添加到cpu工作队列中
 	struct work_struct *quiesce_continuation;
 
 	struct rb_node node;
