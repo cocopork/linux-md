@@ -409,6 +409,7 @@ struct cache {
 	struct bio_set bs;
 };
 
+// ggboy:clone bio内存池(即md->io_bs)分配clone bio的时候，每个clone bio结构体之前就是per_bio_data
 struct per_bio_data {
 	bool tick:1;
 	unsigned req_nr:2;
@@ -2638,6 +2639,7 @@ static int copy_ctr_args(struct cache *cache, int argc, const char **argv)
 	return 0;
 }
 
+// ggboy:解析创建参数并创建整个dm-cache
 static int cache_ctr(struct dm_target *ti, unsigned argc, char **argv)
 {
 	int r = -EINVAL;
