@@ -129,7 +129,9 @@ struct dm_writecache {
 	unsigned long pause;
 
 	unsigned uncommitted_blocks;
+	// ggboy:不发出FLUSH请求时，自动提交的块数量，SSD模式默认最多提交65536块
 	unsigned autocommit_blocks;
+	// ggboy:最大后台回写的块数量
 	unsigned max_writeback_jobs;
 
 	int error;
@@ -140,17 +142,23 @@ struct dm_writecache {
 
 	struct timer_list max_age_timer;
 
+	// ggboy:等待任务数量
 	atomic_t bio_in_progress[2];
+	// ggboy:读和写等待队列
 	struct wait_queue_head bio_in_progress_wait[2];
 
 	struct dm_target *ti;
 	struct dm_dev *dev;
 	struct dm_dev *ssd_dev;
+	// ggboy:起始扇区
 	sector_t start_sector;
 	void *memory_map;
+	// ggboy:缓存设备的大小
 	uint64_t memory_map_size;
+	// ggboy:元数据区扇区数
 	size_t metadata_sectors;
 	size_t n_blocks;
+	//? ggboy:这是缓存块的序列号或着版本号吗？commit的依据？
 	uint64_t seq_count;
 	sector_t data_device_sectors;
 	void *block_start;
@@ -178,10 +186,15 @@ struct dm_writecache {
 	bool metadata_only:1;
 	bool pause_set:1;
 
+	// ggboy:高水线，使用缓存块数量比例达到该水平之后，启动后台回写任务
 	unsigned high_wm_percent_value;
+	// ggboy:低水线，缓存块比例低于该水平之后，关闭后台回写任务
 	unsigned low_wm_percent_value;
+	// ggboy:自动提交的时间间隔，默认1s
 	unsigned autocommit_time_value;
+	// ggboy:缓存块最大寿命
 	unsigned max_age_value;
+	// ggboy:暂停写回的时间间隔
 	unsigned pause_value;
 
 	unsigned writeback_all;
@@ -195,6 +208,7 @@ struct dm_writecache {
 
 	raw_spinlock_t endio_list_lock;
 	struct list_head endio_list;
+	// ggboy:writecache的endio函数是通过后台线程完成的
 	struct task_struct *endio_thread;
 
 	struct task_struct *flush_thread;
@@ -603,7 +617,10 @@ static void writecache_disk_flush(struct dm_writecache *wc, struct dm_dev *dev)
 		writecache_error(wc, r, "error flushing metadata: %d", r);
 }
 
+// ggboy:如果在红黑树找不到节点，则找下一个节点（下一个被缓存的块）
 #define WFE_RETURN_FOLLOWING	1
+// ggboy:红黑树中每个block可能存在多个节点（单个缓存块上发生多次写请求），、
+// ggboy:则返回最小序列号的块，若不设置，则返回序列号最大的块
 #define WFE_LOWEST_SEQ		2
 
 static struct wc_entry *writecache_find_entry(struct dm_writecache *wc,
@@ -637,6 +654,7 @@ static struct wc_entry *writecache_find_entry(struct dm_writecache *wc,
 		}
 	}
 
+	//? ggboy:红黑树的查找，找到一个节点之后，还要再查询其祖先节点是否
 	while (1) {
 		struct wc_entry *e2;
 		if (flags & WFE_LOWEST_SEQ)
@@ -1331,6 +1349,8 @@ enum wc_map_op {
 static enum wc_map_op writecache_map_remap_origin(struct dm_writecache *wc, struct bio *bio,
 						  struct wc_entry *e)
 {
+	// ggboy:如果缓存中存在下一个块，且当前bio部分与下一个块重叠，
+	// ggboy:不重叠部分由当前bio继续请求，而重叠部分交由下一个bio（应该是由dm.c负责发出）负责请求
 	if (e) {
 		sector_t next_boundary =
 			read_original_sector(wc, e) - bio->bi_iter.bi_sector;
@@ -1375,6 +1395,7 @@ static enum wc_map_op writecache_bio_copy_ssd(struct dm_writecache *wc, struct b
 					      struct wc_entry *e, bool search_used)
 {
 	unsigned bio_size = wc->block_size;
+	// ggboy:从wc_entry对应扇区地址开始，一块一块地修改wc_entry
 	sector_t start_cache_sec = cache_sector(wc, e);
 	sector_t current_cache_sec = start_cache_sec + (bio_size >> SECTOR_SHIFT);
 
@@ -1422,6 +1443,7 @@ static enum wc_map_op writecache_bio_copy_ssd(struct dm_writecache *wc, struct b
 	return WC_MAP_REMAP;
 }
 
+// ggboy:将bio中的数据写入ssd
 static enum wc_map_op writecache_map_write(struct dm_writecache *wc, struct bio *bio)
 {
 	struct wc_entry *e;
@@ -1432,13 +1454,16 @@ static enum wc_map_op writecache_map_write(struct dm_writecache *wc, struct bio 
 		wc->stats.writes++;
 		if (writecache_has_error(wc))
 			return WC_MAP_ERROR;
+		// ggboy:返回最新的一次写请求
 		e = writecache_find_entry(wc, bio->bi_iter.bi_sector, 0);
 		if (e) {
+			// ggboy:命中了未提交的块
 			if (!writecache_entry_is_committed(wc, e)) {
 				wc->stats.write_hits_uncommitted++;
 				search_used = true;
 				goto bio_copy;
 			}
+			// ggboy:命中了已经提交的块
 			wc->stats.write_hits_committed++;
 			if (!WC_MODE_PMEM(wc) && !e->write_in_progress) {
 				wc->overwrote_committed = true;
@@ -1447,6 +1472,7 @@ static enum wc_map_op writecache_map_write(struct dm_writecache *wc, struct bio 
 			}
 			found_entry = true;
 		} else {
+			// ggboy:（部分）未命中缓存，如果是clean任务或者元数据这种需要下刷的，则将未命中部分写回慢设备
 			if (unlikely(wc->cleaner) ||
 			    (wc->metadata_only && !(bio->bi_opf & REQ_META)))
 				goto direct_write;
@@ -2093,12 +2119,14 @@ static int calculate_memory_size(uint64_t device_size, unsigned block_size,
 	struct wc_entry e;
 
 	n_blocks = device_size;
+	// ggboy:看起来在缓存设备上每个缓存块要预留一个内存entry的空间
 	do_div(n_blocks, block_size + sizeof(struct wc_memory_entry));
 
 	while (1) {
 		if (!n_blocks)
 			return -ENOSPC;
 		/* Verify the following entries[n_blocks] won't overflow */
+		// ggboy:检查n_blocks不会溢出64位内存上限
 		if (n_blocks >= ((size_t)-sizeof(struct wc_memory_superblock) /
 				 sizeof(struct wc_memory_entry)))
 			return -EFBIG;
@@ -2106,6 +2134,8 @@ static int calculate_memory_size(uint64_t device_size, unsigned block_size,
 		offset = (offset + block_size - 1) & ~(uint64_t)(block_size - 1);
 		if (offset + n_blocks * block_size <= device_size)
 			break;
+		// ggboy:先算最大块数量，再以元数据区+缓存数据区小于缓存设备大小为条件进行递减，
+		// ggboy:最后得到的这个偏移应该是真正的缓存数据区起始块地址
 		n_blocks--;
 	}
 
@@ -2502,6 +2532,7 @@ invalid_optional:
 		}
 		wake_up_process(wc->flush_thread);
 
+		// ggboy:计算writecache需要的内存空间，主要用于放置wc_memory_entry数组
 		r = calculate_memory_size(wc->memory_map_size, wc->block_size,
 					  &n_blocks, &n_metadata_blocks);
 		if (r) {
